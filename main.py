@@ -25,6 +25,12 @@ from auth import authenticate_user, create_access_token, get_current_user, get_p
 from email_service import send_email
 import secrets
 
+from database import engine, Base
+import models
+
+
+models.Base.metadata.create_all(bind=engine)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
