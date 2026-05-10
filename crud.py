@@ -5,6 +5,8 @@ from models import Contact, User
 from schemas import ContactCreate, ContactUpdate, UserCreate
 from passlib.context import CryptContext
 
+from database import redis_client
+
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -194,7 +196,7 @@ def create_user(db: Session, user: UserCreate, avatar: str = None, verification_
 
 def update_user_avatar(db: Session, user_id: int, avatar: str):
     """
-    Update the avatar URL for a specific user.
+    Update the avatar URL for a specific user and invalidate their cache.
 
     Args:
         db (Session): The database session.
@@ -209,11 +211,13 @@ def update_user_avatar(db: Session, user_id: int, avatar: str):
         db_user.avatar = avatar
         db.commit()
         db.refresh(db_user)
+        # Invalidate cache
+        redis_client.delete(f"user:{db_user.username}")
     return db_user
 
 def confirm_user_email(db: Session, user_id: int):
     """
-    Mark a user's email as confirmed and clear the verification token.
+    Mark a user's email as confirmed and invalidate their cache.
 
     Args:
         db (Session): The database session.
@@ -227,7 +231,9 @@ def confirm_user_email(db: Session, user_id: int):
         db_user.confirmed = True
         db_user.email_verification_token = None 
         db.commit()
-        db.refresh(db_user)
+        db_user = db.get(User, user_id) # Safer refresh
+        # Invalidate cache
+        redis_client.delete(f"user:{db_user.username}")
     return db_user
 
 def get_user_by_verification_token(db: Session, token: str):

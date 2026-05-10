@@ -10,6 +10,9 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import User
 
+import pickle  
+from database import get_db, redis_client 
+
 # Load environment variables from .env
 load_dotenv()
 
@@ -91,9 +94,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     """
-    Retrieve the current user based on the provided JWT token.
+    Retrieve the current user based on the provided JWT token with Redis caching.
 
     Args:
         token (str): The JWT token provided in the Authorization header.
@@ -118,7 +122,21 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise credentials_exception
         
+    # 1. Try to get user from Redis cache
+    cache_key = f"user:{username}"
+    cached_user = redis_client.get(cache_key)
+
+    if cached_user:
+        # Deserialize and merge with current session
+        user = pickle.loads(cached_user)
+        return db.merge(user, load=False)
+
+    # 2. If not in cache, fetch from database
     user = db.query(User).filter(User.username == username).first()
     if user is None:
         raise credentials_exception
+
+    # 3. Store user object in Redis for 15 minutes
+    redis_client.setex(cache_key, 900, pickle.dumps(user))
+    
     return user
