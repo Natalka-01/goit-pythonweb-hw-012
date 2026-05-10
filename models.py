@@ -1,6 +1,12 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, UniqueConstraint
+import enum
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, Boolean, UniqueConstraint, Enum
 from sqlalchemy.orm import relationship
 from database import Base
+
+
+class UserRole(str, enum.Enum):
+    USER = "user"
+    ADMIN = "admin"
 
 class User(Base):
     __tablename__ = "users"
@@ -11,8 +17,12 @@ class User(Base):
     hashed_password = Column(String)
     avatar = Column(String, nullable=True)
     confirmed = Column(Boolean, default=False)
-    email_verification_token = Column(String, nullable=True)
     
+
+    email_verification_token = Column(String, nullable=True)
+    reset_token = Column(String, nullable=True) 
+    role = Column(Enum(UserRole), default=UserRole.USER, nullable=False) # Ролі
+
     contacts = relationship("Contact", back_populates="user", cascade="all, delete-orphan")
 
 class Contact(Base):
