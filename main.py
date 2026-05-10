@@ -1,42 +1,39 @@
+from datetime import datetime, timedelta
+from typing import Optional
+import os
+import secrets
+import logging
+
+import cloudinary
+import cloudinary.uploader
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
-from fastapi import Request
+from fastapi import FastAPI, Depends, HTTPException, status, APIRouter, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
+from jose import JWTError, jwt
 from sqlalchemy import exc
 from sqlalchemy.orm import Session
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-import cloudinary
-import cloudinary.uploader
-import os
-import logging
+
+# Імпорти вашого проекту
 from database import get_db, engine, Base
-from models import Contact, User
-from schemas import ContactCreate, ContactUpdate, Contact, UserCreate, User, Token
+from models import Contact as ContactModel, User, UserRole
+import schemas  # Додано імпорт схем цілком
 from crud import (
     get_contacts, get_contact, create_contact, update_contact, delete_contact,
     search_contacts, get_upcoming_birthdays, get_user_by_email, get_user_by_username,
     create_user, update_user_avatar, confirm_user_email, get_user_by_verification_token
 )
-from auth import authenticate_user, create_access_token, get_current_user, get_password_hash
+import auth  # Імпортуємо модуль auth цілком
+from auth import authenticate_user, create_access_token, get_current_user, get_password_hash, RoleChecker
 from email_service import send_email
-import secrets
 
-from database import engine, Base
-import models
-
-
-models.Base.metadata.create_all(bind=engine)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# --- Налаштування логування та оточення ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
 load_dotenv()
 
 cloudinary.config(
@@ -44,136 +41,95 @@ cloudinary.config(
     api_key=os.getenv("CLOUDINARY_API_KEY"),
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
-
-app = FastAPI(title="Contacts API", description="API for managing contacts")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app = FastAPI(title="Contacts API")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(SlowAPIMiddleware)
 
-@app.post("/auth/register", response_model=User, status_code=201)
-def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    """
-    Register a new user and send a verification email.
+# Створюємо роутер для авторизації
+auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
-    Args:
-        user: The user data for registration.
-        db: The database session.
-
-    Returns:
-        The newly created user object.
-    """
+@auth_router.post("/register", response_model=schemas.User, status_code=201)
+def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if get_user_by_email(db, email=user.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
-    if get_user_by_username(db, username=user.username):
-        raise HTTPException(status_code=409, detail="User with this username already exists")
-
+    
     verification_token = secrets.token_urlsafe(32)
-    try:
-        new_user = create_user(db, user, verification_token=verification_token)
-        subject = "Email Verification"
-        body = f"Please verify your email: http://localhost:8000/auth/verify?token={verification_token}"
-        email_sent = send_email(new_user.email, subject, body)
-        if not email_sent:
-            logger.warning(f"Verification email could not be sent to {new_user.email}")
-        return new_user
-    except exc.IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="User already exists")
+    new_user = create_user(db, user, verification_token=verification_token)
+    
+    subject = "Email Verification"
+    body = f"Verify your email: http://localhost:8000/auth/verify?token={verification_token}"
+    send_email(new_user.email, subject, body)
+    
+    return new_user
 
-@app.get("/auth/verify")
+@auth_router.get("/verify")
 def verify_email(token: str, db: Session = Depends(get_db)):
-    """
-    Verify a user's email using a token.
-
-    Args:
-        token: The verification token from the email.
-        db: The database session.
-
-    Returns:
-        A success message if verified.
-    """
     user = get_user_by_verification_token(db, token)
     if not user:
         raise HTTPException(status_code=400, detail="Invalid token")
     confirm_user_email(db, user.id)
     return {"message": "Email verified successfully"}
 
-@app.post("/auth/login", response_model=Token)
+@auth_router.post("/login", response_model=schemas.Token)
 def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """
-    Authenticate a user and return an access token.
-
-    Args:
-        form_data: The login credentials (username and password).
-        db: The database session.
-
-    Returns:
-        A dictionary containing the access token and token type.
-    """
     user = authenticate_user(db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not user.confirmed:
-        raise HTTPException(
-            status_code=401,
-            detail="Email not verified",
-        )
+    if not user or not user.confirmed:
+        raise HTTPException(status_code=401, detail="Invalid credentials or email not verified")
+    
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/users/me", response_model=User)
+    
+@auth_router.post("/request-reset")
+async def request_reset(body: schemas.RequestEmail, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == body.email).first()
+    if user:
+        token = auth.create_reset_token(user.email)
+        user.reset_token = token
+        db.commit()
+        reset_link = f"http://localhost:8000/auth/reset-password?token={token}"
+        send_email(user.email, "Password Reset", f"Reset your password: {reset_link}")
+    return {"message": "If the email exists, a reset link has been sent."}
+
+@auth_router.post("/reset-password")
+async def reset_password(body: schemas.PasswordReset, db: Session = Depends(get_db)):
+    try:
+        payload = jwt.decode(body.token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        email = payload.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    user = db.query(User).filter(User.email == email, User.reset_token == body.token).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Token already used or invalid")
+
+    user.hashed_password = get_password_hash(body.new_password)
+    user.reset_token = None
+    db.commit()
+    return {"message": "Password updated successfully"}
+
+
+@app.get("/users/me", response_model=schemas.User)
 @limiter.limit("10/minute")
 def read_users_me(request: Request, current_user: User = Depends(get_current_user)):
-    """
-    Get the profile of the currently authenticated user.
-
-    Args:
-        request: The request object (required for rate limiting).
-        current_user: The currently authenticated user.
-
-    Returns:
-        The current user object.
-    """
     return current_user
 
-@app.patch("/users/avatar", response_model=User)
+@app.patch("/users/avatar", response_model=schemas.User, dependencies=[Depends(RoleChecker([UserRole.ADMIN]))])
 def update_avatar(file: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """
-    Update the current user's avatar using Cloudinary.
-
-    Args:
-        file: The image file to upload.
-        current_user: The currently authenticated user.
-        db: The database session.
-
-    Returns:
-        The updated user object with the new avatar URL.
-    """
     try:
         result = cloudinary.uploader.upload(file.file, public_id=f"avatars/{current_user.username}")
         avatar_url = result.get("url")
-        if not avatar_url:
-            raise HTTPException(status_code=500, detail="Failed to get URL from Cloudinary")
-        updated_user = update_user_avatar(db, current_user.id, avatar_url)
-        return updated_user
+        return update_user_avatar(db, current_user.id, avatar_url)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cloudinary error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/contacts/", response_model=list[Contact])
+app.include_router(auth_router)
+
+@app.get("/contacts/", response_model=list[schemas.Contact])
 def read_contacts(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Retrieve a list of contacts for the current user.
@@ -190,7 +146,7 @@ def read_contacts(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)
     contacts = get_contacts(db=db, user_id=current_user.id, skip=skip, limit=limit)
     return contacts
 
-@app.get("/contacts/{contact_id}", response_model=Contact)
+@app.get("/contacts/{contact_id}", response_model=schemas.Contact)
 def read_contact(contact_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Get details of a specific contact by ID.
@@ -208,8 +164,8 @@ def read_contact(contact_id: int, db: Session = Depends(get_db), current_user: U
         raise HTTPException(status_code=404, detail="Contact not found")
     return db_contact
 
-@app.post("/contacts/", response_model=Contact, status_code=201)
-def create_new_contact(contact: ContactCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@app.post("/contacts/", response_model=schemas.Contact, status_code=201)
+def create_new_contact(contact: schemas.ContactCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Create a new contact for the current user.
 
@@ -223,8 +179,8 @@ def create_new_contact(contact: ContactCreate, db: Session = Depends(get_db), cu
     """
     return create_contact(db=db, contact=contact, user_id=current_user.id)
 
-@app.put("/contacts/{contact_id}", response_model=Contact)
-def update_existing_contact(contact_id: int, contact: ContactUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@app.put("/contacts/{contact_id}", response_model=schemas.Contact)
+def update_existing_contact(contact_id: int, contact: schemas.ContactUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Update an existing contact's information.
 
@@ -260,7 +216,7 @@ def delete_existing_contact(contact_id: int, db: Session = Depends(get_db), curr
         raise HTTPException(status_code=404, detail="Contact not found")
     return {"message": "Contact deleted"}
 
-@app.get("/contacts/search/", response_model=list[Contact])
+@app.get("/contacts/search/", response_model=list[schemas.Contact])
 def search_contacts_endpoint(query: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Search for contacts by a query string.
@@ -276,7 +232,7 @@ def search_contacts_endpoint(query: str, db: Session = Depends(get_db), current_
     contacts = search_contacts(db=db, query=query, user_id=current_user.id)
     return contacts
 
-@app.get("/contacts/birthdays/", response_model=list[Contact])
+@app.get("/contacts/birthdays/", response_model=list[schemas.Contact])
 def get_birthdays(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Get a list of contacts with upcoming birthdays.

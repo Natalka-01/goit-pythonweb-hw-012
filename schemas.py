@@ -1,6 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 from datetime import date
 from typing import Optional
+from models import UserRole
 
 class ContactBase(BaseModel):
     first_name: str
@@ -33,7 +34,16 @@ class User(UserBase):
     id: int
     confirmed: bool
 
+    role: UserRole
+
     model_config = {"from_attributes": True}
+
+class RequestEmail(BaseModel):
+    email: EmailStr
+
+class PasswordReset(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=6, max_length=12)
 
 class Token(BaseModel):
     access_token: str
