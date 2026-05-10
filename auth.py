@@ -110,7 +110,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -122,8 +121,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         
     user = db.query(User).filter(User.username == username).first()
     if user is None:
-        raise credentials_exception
-    return 
+        
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
     
 
 def create_reset_token(email: str) -> str:
