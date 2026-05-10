@@ -67,3 +67,16 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ## API docs
 
 Open `http://localhost:8000/docs` after the server starts.
+
+## Doc
+```bash
+cd docs
+./make.bat html
+```
+
+
+## Testing
+
+```bash
+python -m pytest --cov=. --cov-config=.coveragerc --cov-report=term-missing tests/
+```
