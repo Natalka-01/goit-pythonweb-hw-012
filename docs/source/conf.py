@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.abspath('../../.env'))
 
 # Your existing path setup
-sys.path.insert(0, os.path.abspath('../../'))
+sys.path.insert(0, os.path.abspath('../../../'))
 
 project = 'final_project'
 copyright = '2026, Nataliia'
