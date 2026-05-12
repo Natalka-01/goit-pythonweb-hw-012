@@ -123,28 +123,27 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise credentials_exception
         
-    # 1. Try to get user from Redis cache
     cache_key = f"user:{username}"
+    # У тестах тут повернеться None завдяки налаштуванню в conftest.py
     cached_user = redis_client.get(cache_key)
 
     if cached_user:
-        # Deserialize and merge with current session
         user = pickle.loads(cached_user)
         return db.merge(user, load=False)
 
-    # 2. If not in cache, fetch from database
     user = db.query(User).filter(User.username == username).first()
     if user is None:
-        
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+
     
+    redis_client.setex(cache_key, 900, pickle.dumps(user))
+    
+    return user
 
 def create_reset_token(email: str) -> str:
     expire = datetime.utcnow() + timedelta(minutes=15)
     to_encode = {"exp": expire, "sub": email, "type": "password_reset"}
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
 
 class RoleChecker:
     def __init__(self, allowed_roles: list[UserRole]):
@@ -157,9 +156,3 @@ class RoleChecker:
                 detail="You do not have enough permissions"
             )
         return current_user
-        raise credentials_exception
-
-    # 3. Store user object in Redis for 15 minutes
-    redis_client.setex(cache_key, 900, pickle.dumps(user))
-    
-    return user

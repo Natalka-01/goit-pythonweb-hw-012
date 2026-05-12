@@ -33,7 +33,6 @@ def test_create_contact(client, token):
         headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 201
-    return response.json()["id"]
 
 def test_update_contact(client, token):
     
@@ -82,6 +81,20 @@ def test_get_birthdays(client, token):
     response = client.get("/contacts/birthdays/", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
 
+def test_register_user_already_exists(client):
+    # Перша спроба (користувач вже може бути в базі)
+    client.post("/auth/register", json={
+        "username": "duplicate",
+        "email": "duplicate@example.com",
+        "password": "password123"
+    })
+    # Друга спроба з тими ж даними
+    response = client.post("/auth/register", json={
+        "username": "duplicate",
+        "email": "duplicate@example.com",
+        "password": "password123"
+    })
+    assert response.status_code == 409 # Conflict
 
 
 
